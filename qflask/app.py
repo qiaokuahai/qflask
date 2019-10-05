@@ -16,6 +16,7 @@ class Flask(object):
         self.url_map = Map()
         self.view_functions = {}
         self.debug = None
+        self.config = {}
 
     def full_dispatch_request(self):
         try:
@@ -29,6 +30,7 @@ class Flask(object):
 
     def dispatch_request(self):
         req = _test_sep_stack.pop()
+        req = req.request
         rule = req.url_rule
         # if we provide automatic options for this URL and the
         # request came with the OPTIONS method, reply automatically
@@ -39,17 +41,18 @@ class Flask(object):
         return self.view_functions[rule.endpoint](**req.view_args)
 
     def finalize_request(self, rv):
-        return rv
+        response = self.make_response(rv)
+        return response
 
     def wsgi_app(self, environ, start_response):
         # 暂时不考虑线程隔离
-        request_obj = self.request_class(environ)
-        _test_sep_stack.append(request_obj)
+        ctx = self.request_context(environ)
+        _test_sep_stack.append(ctx)
         try:
             try:
                 response = self.full_dispatch_request()
             except Exception as e:
-                response = self.make_response(self.handle_exception(e))
+                raise
             return response(environ, start_response)
         finally:
             pass
@@ -91,12 +94,10 @@ class Flask(object):
             headers, status_or_headers = status_or_headers, None
 
         if not isinstance(rv, self.response_class):
-            if isinstance(rv, (text_type, bytes, bytearray)):
-                rv = self.response_class(rv, headers=headers,
-                                         status=status_or_headers)
-                headers = status_or_headers = None
-            else:
-                rv = self.response_class.force_type(rv, request.environ)
+            if not isinstance(rv, dict):
+                raise
+            rv = self.response_class(rv, headers=headers,
+                                     status=status_or_headers)
 
         if status_or_headers is not None:
             if isinstance(status_or_headers, string_types):
@@ -107,6 +108,29 @@ class Flask(object):
             rv.headers.extend(headers)
 
         return rv
+
+    def create_url_adapter(self, request):
+        """Creates a URL adapter for the given request.  The URL adapter
+        is created at a point where the request context is not yet set up
+        so the request is passed explicitly.
+
+        .. versionadded:: 0.6
+
+        .. versionchanged:: 0.9
+           This can now also be called without a request object when the
+           URL adapter is created for the application context.
+        """
+        server_name = self.config.get("SERVER_NAME")
+        if request is not None:
+            return self.url_map.bind_to_environ(request.environ,
+                                                server_name=server_name)
+        # We need at the very least the server name to be set for this
+        # to work.
+        if server_name is not None:
+            return self.url_map.bind(
+                self.config['SERVER_NAME'],
+                script_name=self.config['APPLICATION_ROOT'] or '/',
+                url_scheme=self.config['PREFERRED_URL_SCHEME'])
 
     def run(self, host=None, port=None, debug=None, **options):
         from werkzeug.serving import run_simple
